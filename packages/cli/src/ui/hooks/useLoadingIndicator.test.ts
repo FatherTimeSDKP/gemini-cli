@@ -28,7 +28,9 @@ describe('useLoadingIndicator', () => {
       useLoadingIndicator(StreamingState.Idle),
     );
     expect(result.current.elapsedTime).toBe(0);
-    expect(result.current.currentLoadingPhrase).toBe(WITTY_LOADING_PHRASES[0]);
+    expect(WITTY_LOADING_PHRASES).toContain(
+      result.current.currentLoadingPhrase,
+    );
   });
 
   it('should reflect values when Responding', async () => {
@@ -41,14 +43,12 @@ describe('useLoadingIndicator', () => {
     expect(WITTY_LOADING_PHRASES).toContain(
       result.current.currentLoadingPhrase,
     );
-    const initialPhrase = result.current.currentLoadingPhrase;
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(PHRASE_CHANGE_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(PHRASE_CHANGE_INTERVAL_MS + 1);
     });
 
     // Phrase should cycle if PHRASE_CHANGE_INTERVAL_MS has passed
-    expect(result.current.currentLoadingPhrase).not.toBe(initialPhrase);
     expect(WITTY_LOADING_PHRASES).toContain(
       result.current.currentLoadingPhrase,
     );
@@ -130,7 +130,9 @@ describe('useLoadingIndicator', () => {
     });
 
     expect(result.current.elapsedTime).toBe(0);
-    expect(result.current.currentLoadingPhrase).toBe(WITTY_LOADING_PHRASES[0]);
+    expect(WITTY_LOADING_PHRASES).toContain(
+      result.current.currentLoadingPhrase,
+    );
 
     // Timer should not advance
     await act(async () => {

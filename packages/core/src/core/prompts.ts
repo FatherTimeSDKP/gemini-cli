@@ -6,6 +6,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { LSTool } from '../tools/ls.js';
 import { EditTool } from '../tools/edit.js';
 import { GlobTool } from '../tools/glob.js';
@@ -18,17 +19,75 @@ import process from 'node:process';
 import { isGitRepository } from '../utils/gitUtils.js';
 import { MemoryTool, GEMINI_CONFIG_DIR } from '../tools/memoryTool.js';
 
-export function getCoreSystemPrompt(userMemory?: string): string {
-  // if GEMINI_SYSTEM_MD is set (and not 0|false), override system prompt from file
-  // default path is .gemini/system.md but can be modified via custom path in GEMINI_SYSTEM_MD
-  let systemMdEnabled = false;
-  let systemMdPath = path.join(GEMINI_CONFIG_DIR, 'system.md');
-  const systemMdVar = process.env.GEMINI_SYSTEM_MD?.toLowerCase();
-  if (systemMdVar && !['0', 'false'].includes(systemMdVar)) {
-    systemMdEnabled = true; // enable system prompt override
-    if (!['1', 'true'].includes(systemMdVar)) {
-      systemMdPath = systemMdVar; // use custom path from GEMINI_SYSTEM_MD
+export function resolvePathFromEnv(envVar?: string): {
+  isSwitch: boolean;
+  value: string | null;
+  isDisabled: boolean;
+} {
+  // Handle the case where the environment variable is not set, empty, or just whitespace.
+  const trimmedEnvVar = envVar?.trim();
+  if (!trimmedEnvVar) {
+    return { isSwitch: false, value: null, isDisabled: false };
+  }
+
+  const lowerEnvVar = trimmedEnvVar.toLowerCase();
+  // Check if the input is a common boolean-like string.
+  if (['0', 'false', '1', 'true'].includes(lowerEnvVar)) {
+    // If so, identify it as a "switch" and return its value.
+    const isDisabled = ['0', 'false'].includes(lowerEnvVar);
+    return { isSwitch: true, value: lowerEnvVar, isDisabled };
+  }
+
+  // If it's not a switch, treat it as a potential file path.
+  let customPath = trimmedEnvVar;
+
+  // Safely expand the tilde (~) character to the user's home directory.
+  if (customPath.startsWith('~/') || customPath === '~') {
+    try {
+      const home = os.homedir(); // This is the call that can throw an error.
+      if (customPath === '~') {
+        customPath = home;
+      } else {
+        customPath = path.join(home, customPath.slice(2));
+      }
+    } catch (error) {
+      // If os.homedir() fails, we catch the error instead of crashing.
+      console.warn(
+        `Could not resolve home directory for path: ${trimmedEnvVar}`,
+        error,
+      );
+      // Return null to indicate the path resolution failed.
+      return { isSwitch: false, value: null, isDisabled: false };
     }
+  }
+
+  // Return it as a non-switch with the fully resolved absolute path.
+  return {
+    isSwitch: false,
+    value: path.resolve(customPath),
+    isDisabled: false,
+  };
+}
+
+export function getCoreSystemPrompt(userMemory?: string): string {
+  // A flag to indicate whether the system prompt override is active.
+  let systemMdEnabled = false;
+  // The default path for the system prompt file. This can be overridden.
+  let systemMdPath = path.resolve(path.join(GEMINI_CONFIG_DIR, 'system.md'));
+  // Resolve the environment variable to get either a path or a switch value.
+  const systemMdResolution = resolvePathFromEnv(
+    process.env['GEMINI_SYSTEM_MD'],
+  );
+
+  // Proceed only if the environment variable is set and is not disabled.
+  if (systemMdResolution.value && !systemMdResolution.isDisabled) {
+    systemMdEnabled = true;
+
+    // We update systemMdPath to this new custom path.
+    if (!systemMdResolution.isSwitch) {
+      systemMdPath = systemMdResolution.value;
+    }
+
     // require file to exist when override is enabled
     if (!fs.existsSync(systemMdPath)) {
       throw new Error(`missing system prompt file '${systemMdPath}'`);
@@ -49,6 +108,7 @@ You are an interactive CLI agent specializing in software engineering tasks. You
 - **Proactiveness:** Fulfill the user's request thoroughly, including reasonable, directly implied follow-up actions.
 - **Confirm Ambiguity/Expansion:** Do not take significant actions beyond the clear scope of the request without confirming with the user. If asked *how* to do something, explain first, don't just do it.
 - **Explaining Changes:** After completing a code modification or file operation *do not* provide summaries unless asked.
+- **Path Construction:** Before using any file system tool (e.g., ${ReadFileTool.Name}' or '${WriteFileTool.Name}'), you must construct the full absolute path for the file_path argument. Always combine the absolute path of the project's root directory with the file's path relative to the root. For example, if the project root is /path/to/project/ and the file is foo/bar/baz.txt, the final path you must use is /path/to/project/foo/bar/baz.txt. If the user provides a relative path, you must resolve it against the root directory to create an absolute path.
 - **Do Not revert changes:** Do not revert changes to the codebase unless asked to do so by the user. Only revert changes made by you if they have resulted in an error or if the user has explicitly asked you to revert the changes.
 
 # Primary Workflows
@@ -101,7 +161,7 @@ When requested to perform tasks like fixing bugs, adding features, refactoring, 
 - **Command Execution:** Use the '${ShellTool.Name}' tool for running shell commands, remembering the safety rule to explain modifying commands first.
 - **Background Processes:** Use background processes (via \`&\`) for commands that are unlikely to stop on their own, e.g. \`node server.js &\`. If unsure, ask the user.
 - **Interactive Commands:** Try to avoid shell commands that are likely to require user interaction (e.g. \`git rebase -i\`). Use non-interactive versions of commands (e.g. \`npm init -y\` instead of \`npm init\`) when available, and otherwise remind the user that interactive shell commands are not supported and may cause hangs until canceled by the user.
-- **Remembering Facts:** Use the '${MemoryTool.Name}' tool to remember specific, *user-related* facts or preferences when the user explicitly asks, or when they state a clear, concise piece of information that would help personalize or streamline *your future interactions with them* (e.g., preferred coding style, common project paths they use, personal tool aliases). This tool is for user-specific information that should persist across sessions. Do *not* use it for general project context or information that belongs in project-specific \`GEMINI.md\` files. If unsure whether to save something, you can ask the user, "Should I remember that for you?"
+- **Remembering Facts:** Use the '${MemoryTool.Name}' tool to remember specific, *user-related* facts or preferences when the user explicitly asks, or when they state a clear, concise piece of information that would help personalize or streamline *your future interactions with them* (e.g., preferred coding style, common project paths they use, personal tool aliases). This tool is for user-specific information that should persist across sessions. Do *not* use it for general project context or information. If unsure whether to save something, you can ask the user, "Should I remember that for you?"
 - **Respect User Confirmations:** Most tool calls (also denoted as 'function calls') will first require confirmation from the user, where they will either approve or cancel the function call. If a user cancels a function call, respect their choice and do _not_ try to make the function call again. It is okay to request the tool call again _only_ if the user requests that same tool call on a subsequent prompt. When a user cancels a function call, assume best intentions from the user and consider inquiring if they prefer any alternative paths forward.
 
 ## Interaction Details
@@ -110,13 +170,13 @@ When requested to perform tasks like fixing bugs, adding features, refactoring, 
 
 ${(function () {
   // Determine sandbox status based on environment variables
-  const isSandboxExec = process.env.SANDBOX === 'sandbox-exec';
-  const isGenericSandbox = !!process.env.SANDBOX; // Check if SANDBOX is set to any non-empty value
+  const isSandboxExec = process.env['SANDBOX'] === 'sandbox-exec';
+  const isGenericSandbox = !!process.env['SANDBOX']; // Check if SANDBOX is set to any non-empty value
 
   if (isSandboxExec) {
     return `
-# MacOS Seatbelt
-You are running under macos seatbelt with limited access to files outside the project directory or system temp directory, and with limited access to host system resources such as ports. If you encounter failures that could be due to MacOS Seatbelt (e.g. if a command fails with 'Operation not permitted' or similar error), as you report the error to the user, also explain why you think it could be due to MacOS Seatbelt, and how the user may need to adjust their Seatbelt profile.
+# macOS Seatbelt
+You are running under macos seatbelt with limited access to files outside the project directory or system temp directory, and with limited access to host system resources such as ports. If you encounter failures that could be due to macOS Seatbelt (e.g. if a command fails with 'Operation not permitted' or similar error), as you report the error to the user, also explain why you think it could be due to macOS Seatbelt, and how the user may need to adjust their Seatbelt profile.
 `;
   } else if (isGenericSandbox) {
     return `
@@ -166,7 +226,7 @@ model: true
 
 <example>
 user: list files here.
-model: [tool_call: ${LSTool.Name} for path '.']
+model: [tool_call: ${LSTool.Name} for path '/path/to/project']
 </example>
 
 <example>
@@ -211,7 +271,7 @@ ${(function () {
 
 <example>
 user: Delete the temp directory.
-model: I can run \`rm -rf ./temp\`. This will permanently delete the directory and all its contents.
+model: I can run \`rm -rf /path/to/project/temp\`. This will permanently delete the directory and all its contents.
 </example>
 
 <example>
@@ -255,13 +315,19 @@ Your core function is efficient and safe assistance. Balance extreme conciseness
 `.trim();
 
   // if GEMINI_WRITE_SYSTEM_MD is set (and not 0|false), write base system prompt to file
-  const writeSystemMdVar = process.env.GEMINI_WRITE_SYSTEM_MD?.toLowerCase();
-  if (writeSystemMdVar && !['0', 'false'].includes(writeSystemMdVar)) {
-    if (['1', 'true'].includes(writeSystemMdVar)) {
-      fs.writeFileSync(systemMdPath, basePrompt); // write to default path, can be modified via GEMINI_SYSTEM_MD
-    } else {
-      fs.writeFileSync(writeSystemMdVar, basePrompt); // write to custom path from GEMINI_WRITE_SYSTEM_MD
-    }
+  const writeSystemMdResolution = resolvePathFromEnv(
+    process.env['GEMINI_WRITE_SYSTEM_MD'],
+  );
+
+  // Check if the feature is enabled. This proceeds only if the environment
+  // variable is set and is not explicitly '0' or 'false'.
+  if (writeSystemMdResolution.value && !writeSystemMdResolution.isDisabled) {
+    const writePath = writeSystemMdResolution.isSwitch
+      ? systemMdPath
+      : writeSystemMdResolution.value;
+
+    fs.mkdirSync(path.dirname(writePath), { recursive: true });
+    fs.writeFileSync(writePath, basePrompt);
   }
 
   const memorySuffix =
@@ -270,4 +336,69 @@ Your core function is efficient and safe assistance. Balance extreme conciseness
       : '';
 
   return `${basePrompt}${memorySuffix}`;
+}
+
+/**
+ * Provides the system prompt for the history compression process.
+ * This prompt instructs the model to act as a specialized state manager,
+ * think in a scratchpad, and produce a structured XML summary.
+ */
+export function getCompressionPrompt(): string {
+  return `
+You are the component that summarizes internal chat history into a given structure.
+
+When the conversation history grows too large, you will be invoked to distill the entire history into a concise, structured XML snapshot. This snapshot is CRITICAL, as it will become the agent's *only* memory of the past. The agent will resume its work based solely on this snapshot. All crucial details, plans, errors, and user directives MUST be preserved.
+
+First, you will think through the entire history in a private <scratchpad>. Review the user's overall goal, the agent's actions, tool outputs, file modifications, and any unresolved questions. Identify every piece of information that is essential for future actions.
+
+After your reasoning is complete, generate the final <state_snapshot> XML object. Be incredibly dense with information. Omit any irrelevant conversational filler.
+
+The structure MUST be as follows:
+
+<state_snapshot>
+    <overall_goal>
+        <!-- A single, concise sentence describing the user's high-level objective. -->
+        <!-- Example: "Refactor the authentication service to use a new JWT library." -->
+    </overall_goal>
+
+    <key_knowledge>
+        <!-- Crucial facts, conventions, and constraints the agent must remember based on the conversation history and interaction with the user. Use bullet points. -->
+        <!-- Example:
+         - Build Command: \`npm run build\`
+         - Testing: Tests are run with \`npm test\`. Test files must end in \`.test.ts\`.
+         - API Endpoint: The primary API endpoint is \`https://api.example.com/v2\`.
+         
+        -->
+    </key_knowledge>
+
+    <file_system_state>
+        <!-- List files that have been created, read, modified, or deleted. Note their status and critical learnings. -->
+        <!-- Example:
+         - CWD: \`/home/user/project/src\`
+         - READ: \`package.json\` - Confirmed 'axios' is a dependency.
+         - MODIFIED: \`services/auth.ts\` - Replaced 'jsonwebtoken' with 'jose'.
+         - CREATED: \`tests/new-feature.test.ts\` - Initial test structure for the new feature.
+        -->
+    </file_system_state>
+
+    <recent_actions>
+        <!-- A summary of the last few significant agent actions and their outcomes. Focus on facts. -->
+        <!-- Example:
+         - Ran \`grep 'old_function'\` which returned 3 results in 2 files.
+         - Ran \`npm run test\`, which failed due to a snapshot mismatch in \`UserProfile.test.ts\`.
+         - Ran \`ls -F static/\` and discovered image assets are stored as \`.webp\`.
+        -->
+    </recent_actions>
+
+    <current_plan>
+        <!-- The agent's step-by-step plan. Mark completed steps. -->
+        <!-- Example:
+         1. [DONE] Identify all files using the deprecated 'UserAPI'.
+         2. [IN PROGRESS] Refactor \`src/components/UserProfile.tsx\` to use the new 'ProfileAPI'.
+         3. [TODO] Refactor the remaining files.
+         4. [TODO] Update tests to reflect the API change.
+        -->
+    </current_plan>
+</state_snapshot>
+`.trim();
 }

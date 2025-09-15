@@ -4,11 +4,26 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {
+import type {
+  CompressionStatus,
+  ThoughtSummary,
   ToolCallConfirmationDetails,
+  ToolConfirmationOutcome,
   ToolResultDisplay,
 } from '@google/gemini-cli-core';
-import { CumulativeStats } from './contexts/SessionContext.js';
+import type { PartListUnion } from '@google/genai';
+import { type ReactNode } from 'react';
+
+export type { ThoughtSummary };
+
+export enum AuthState {
+  // Attemtping to authenticate or re-authenticate
+  Unauthenticated = 'unauthenticated',
+  // Auth dialog is open for user to select auth method
+  Updating = 'updating',
+  // Successfully authenticated
+  Authenticated = 'authenticated',
+}
 
 // Only defining the state enum needed by the UI
 export enum StreamingState {
@@ -51,12 +66,15 @@ export interface IndividualToolCallDisplay {
   status: ToolCallStatus;
   confirmationDetails: ToolCallConfirmationDetails | undefined;
   renderOutputAsMarkdown?: boolean;
+  ptyId?: number;
+  outputFile?: string;
 }
 
 export interface CompressionProps {
   isPending: boolean;
   originalTokenCount: number | null;
   newTokenCount: number | null;
+  compressionStatus: CompressionStatus | null;
 }
 
 export interface HistoryItemBase {
@@ -94,18 +112,31 @@ export type HistoryItemAbout = HistoryItemBase & {
   osVersion: string;
   sandboxEnv: string;
   modelVersion: string;
+  selectedAuthType: string;
+  gcpProject: string;
+  ideClient: string;
+};
+
+export type HistoryItemHelp = HistoryItemBase & {
+  type: 'help';
+  timestamp: Date;
 };
 
 export type HistoryItemStats = HistoryItemBase & {
   type: 'stats';
-  stats: CumulativeStats;
-  lastTurnStats: CumulativeStats;
   duration: string;
+};
+
+export type HistoryItemModelStats = HistoryItemBase & {
+  type: 'model_stats';
+};
+
+export type HistoryItemToolStats = HistoryItemBase & {
+  type: 'tool_stats';
 };
 
 export type HistoryItemQuit = HistoryItemBase & {
   type: 'quit';
-  stats: CumulativeStats;
   duration: string;
 };
 
@@ -124,6 +155,10 @@ export type HistoryItemCompression = HistoryItemBase & {
   compression: CompressionProps;
 };
 
+export type HistoryItemExtensionsList = HistoryItemBase & {
+  type: 'extensions_list';
+};
+
 // Using Omit<HistoryItem, 'id'> seems to have some issues with typescript's
 // type inference e.g. historyItem.type === 'tool_group' isn't auto-inferring that
 // 'tools' in historyItem.
@@ -136,10 +171,14 @@ export type HistoryItemWithoutId =
   | HistoryItemInfo
   | HistoryItemError
   | HistoryItemAbout
+  | HistoryItemHelp
   | HistoryItemToolGroup
   | HistoryItemStats
+  | HistoryItemModelStats
+  | HistoryItemToolStats
   | HistoryItemQuit
-  | HistoryItemCompression;
+  | HistoryItemCompression
+  | HistoryItemExtensionsList;
 
 export type HistoryItem = HistoryItemWithoutId & { id: number };
 
@@ -149,10 +188,14 @@ export enum MessageType {
   ERROR = 'error',
   USER = 'user',
   ABOUT = 'about',
+  HELP = 'help',
   STATS = 'stats',
+  MODEL_STATS = 'model_stats',
+  TOOL_STATS = 'tool_stats',
   QUIT = 'quit',
   GEMINI = 'gemini',
   COMPRESSION = 'compression',
+  EXTENSIONS_LIST = 'extensions_list',
 }
 
 // Simplified message structure for internal feedback
@@ -169,20 +212,35 @@ export type Message =
       osVersion: string;
       sandboxEnv: string;
       modelVersion: string;
+      selectedAuthType: string;
+      gcpProject: string;
+      ideClient: string;
       content?: string; // Optional content, not really used for ABOUT
+    }
+  | {
+      type: MessageType.HELP;
+      timestamp: Date;
+      content?: string; // Optional content, not really used for HELP
     }
   | {
       type: MessageType.STATS;
       timestamp: Date;
-      stats: CumulativeStats;
-      lastTurnStats: CumulativeStats;
       duration: string;
+      content?: string;
+    }
+  | {
+      type: MessageType.MODEL_STATS;
+      timestamp: Date;
+      content?: string;
+    }
+  | {
+      type: MessageType.TOOL_STATS;
+      timestamp: Date;
       content?: string;
     }
   | {
       type: MessageType.QUIT;
       timestamp: Date;
-      stats: CumulativeStats;
       duration: string;
       content?: string;
     }
@@ -193,7 +251,47 @@ export type Message =
     };
 
 export interface ConsoleMessageItem {
-  type: 'log' | 'warn' | 'error' | 'debug';
+  type: 'log' | 'warn' | 'error' | 'debug' | 'info';
   content: string;
   count: number;
+}
+
+/**
+ * Result type for a slash command that should immediately result in a prompt
+ * being submitted to the Gemini model.
+ */
+export interface SubmitPromptResult {
+  type: 'submit_prompt';
+  content: PartListUnion;
+}
+
+/**
+ * Defines the result of the slash command processor for its consumer (useGeminiStream).
+ */
+export type SlashCommandProcessorResult =
+  | {
+      type: 'schedule_tool';
+      toolName: string;
+      toolArgs: Record<string, unknown>;
+    }
+  | {
+      type: 'handled'; // Indicates the command was processed and no further action is needed.
+    }
+  | SubmitPromptResult;
+
+export interface ShellConfirmationRequest {
+  commands: string[];
+  onConfirm: (
+    outcome: ToolConfirmationOutcome,
+    approvedCommands?: string[],
+  ) => void;
+}
+
+export interface ConfirmationRequest {
+  prompt: ReactNode;
+  onConfirm: (confirm: boolean) => void;
+}
+
+export interface LoopDetectionConfirmationRequest {
+  onComplete: (result: { userSelection: 'disable' | 'keep' }) => void;
 }
